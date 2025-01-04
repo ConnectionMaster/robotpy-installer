@@ -1,14 +1,16 @@
+import functools
 import contextlib
 import hashlib
 import json
 import logging
+import pathlib
 import socket
 import sys
+import typing
 import urllib.request
-from os.path import exists
 
 from robotpy_installer import __version__
-from robotpy_installer.errors import Error
+from .errors import Error
 
 logger = logging.getLogger("robotpy.installer")
 
@@ -25,9 +27,17 @@ def md5sum(fname):
     return md5.hexdigest()
 
 
-def _urlretrieve(url, fname, cache, ssl_context):
-    # Get it
-    print("Downloading", url)
+def _urlretrieve(
+    url,
+    fname: pathlib.Path,
+    cache: bool,
+    ssl_context,
+    show_status: bool = True,
+    reqheaders: typing.Optional[typing.Dict[str, str]] = None,
+):
+    if show_status:
+        # Get it
+        print("Downloading", url)
 
     # Save bandwidth! Use stored metadata to prevent re-downloading
     # stuff we already have
@@ -36,11 +46,11 @@ def _urlretrieve(url, fname, cache, ssl_context):
     cache_fname = None
 
     if cache:
-        cache_fname = fname + ".jmd"
-        if exists(fname) and exists(cache_fname):
+        cache_fname = fname.with_suffix(".jmd")
+        if fname.exists() and cache_fname.exists():
             try:
-                with open(cache_fname) as fp:
-                    md = json.load(fp)
+                with open(cache_fname) as cfp:
+                    md = json.load(cfp)
                 if md5sum(fname) == md["md5"]:
                     etag = md.get("etag")
                     last_modified = md.get("last-modified")
@@ -58,22 +68,26 @@ def _urlretrieve(url, fname, cache, ssl_context):
         sys.stdout.flush()
 
     try:
-        # adapted from urlretrieve source
-        headers = {"User-Agent": _useragent}
-        if last_modified:
-            headers["If-Modified-Since"] = last_modified
-        if etag:
-            headers["If-None-Match"] = etag
+        if reqheaders:
+            reqheaders = reqheaders.copy()
+        else:
+            reqheaders = {}
 
-        req = urllib.request.Request(url, headers=headers)
+        # adapted from urlretrieve source
+        reqheaders["User-Agent"] = _useragent
+        if last_modified:
+            reqheaders["If-Modified-Since"] = last_modified
+        if etag:
+            reqheaders["If-None-Match"] = etag
+
+        req = urllib.request.Request(url, headers=reqheaders)
 
         with contextlib.closing(
             urllib.request.urlopen(req, context=ssl_context)
         ) as rfp:
             headers = rfp.info()
 
-            with open(fname, "wb") as fp:
-
+            with open(fname, "wb") as dfp:
                 # Deal with header stuff
                 size = -1
                 read = 0
@@ -85,8 +99,10 @@ def _urlretrieve(url, fname, cache, ssl_context):
                     if not block:
                         break
                     read += len(block)
-                    fp.write(block)
-                    _reporthook(read, size)
+                    dfp.write(block)
+
+                    if show_status:
+                        _reporthook(read, size)
 
         if size >= 0 and read < size:
             raise ValueError("Only retrieved %s of %s bytes" % (read, size))
@@ -104,7 +120,8 @@ def _urlretrieve(url, fname, cache, ssl_context):
                     json.dump(md, fp)
     except urllib.error.HTTPError as e:
         if e.code == 304:
-            sys.stdout.write("Not modified")
+            if show_status:
+                sys.stdout.write("Not modified")
         else:
             raise
     except Exception as e:
@@ -117,13 +134,17 @@ def _urlretrieve(url, fname, cache, ssl_context):
             raise Exception(msg) from e
         else:
             raise e
-    sys.stdout.write("\n")
+    if show_status:
+        sys.stdout.write("\n")
 
 
 def _resolve_addr(hostname):
     try:
         logger.debug("Looking up hostname '%s'...", hostname)
-        addrs = socket.getaddrinfo(hostname, None)
+        # Note: Windows will never return a SOCK_STREAM address if you don't explicitly
+        #       ask for it here. macOS and Linux always return all types, but filter it
+        #       for us if we specify it here, so it doesn't hurt to specify it.
+        addrs = socket.getaddrinfo(hostname, None, 0, socket.SOCK_STREAM)
     except socket.gaierror as e:
         raise Error("Could not find robot at %s" % hostname) from e
 
@@ -141,7 +162,32 @@ def _resolve_addr(hostname):
                 0
             ]  # The address if the first tuple element for both AF_INET and AF_INET6
             logger.debug("-> Found %s at %s" % (hostname, ip))
-            hostname = ip
-            break
+            return ip
 
-    return hostname
+    raise Error("Could not find robot at %s" % hostname)
+
+
+def print_err(*args):
+    print(*args, file=sys.stderr)
+
+
+def yesno(prompt: str) -> bool:
+    """Returns True if user answers 'y'"""
+    prompt += " [y/n]"
+    a = ""
+    while a not in ["y", "n"]:
+        a = input(prompt).lower()
+
+    return a == "y"
+
+
+def handle_cli_error(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Error as e:
+            print(f"ERROR:", e, file=sys.stderr)
+            return False
+
+    return wrapper
