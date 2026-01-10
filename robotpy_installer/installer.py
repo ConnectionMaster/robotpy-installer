@@ -42,7 +42,7 @@ _ROBOTPY_PYTHON_VERSION = f"python{_ROBOTPY_PYTHON_VERSION_NUM}"
 
 _PIP_STUB_PATH = "/home/admin/rpip"
 
-_PYTHON_IPK = "https://github.com/robotpy/roborio-python/releases/download/2026-3.14.0-r1/python314_3.14.0-r1_cortexa9-vfpv3.ipk"
+_PYTHON_IPK = "https://github.com/robotpy/roborio-python/releases/download/2026-3.14.2-r1/python314_3.14.2-r1_cortexa9-vfpv3.ipk"
 
 logger = logging.getLogger("robotpy.installer")
 
